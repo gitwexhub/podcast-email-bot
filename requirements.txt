@@ -1,0 +1,37 @@
+# Full dependencies for local development
+# For cloud-only Docker deployment, use requirements-cloud.txt instead
+
+# Telegram bot
+python-telegram-bot>=21.0
+
+# Audio/Podcast processing
+yt-dlp>=2024.1.0
+feedparser>=6.0.0
+openai>=1.0.0
+
+# Local transcription (not needed if using Groq/OpenAI cloud)
+faster-whisper>=1.0.0
+
+# HTTP
+httpx>=0.27.0
+
+# Article extraction
+trafilatura>=1.6.0
+
+# AI
+anthropic>=0.40.0
+sentence-transformers>=3.0.0
+
+# Storage
+numpy>=1.26.0
+
+# Scheduling
+apscheduler>=3.10.0
+
+# Configuration
+pyyaml>=6.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Email
+resend>=2.0.0

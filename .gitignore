@@ -1,0 +1,74 @@
+# Configuration with secrets
+config.yaml
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Bot data files (contain user data)
+.summaries.json
+.vectors.db
+.learning.json
+*.db
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Audio files (downloaded during processing)
+*.mp3
+*.m4a
+*.wav
+*.ogg
+
+# Data directory (user content)
+data/
+
+# Temp files
+*.tmp
+*.temp
+.claude/

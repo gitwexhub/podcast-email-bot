@@ -1,0 +1,69 @@
+# Podcast Knowledge Bot Configuration
+# Copy this file to config.yaml and fill in your values
+
+telegram:
+  # Required: Your Telegram bot token from @BotFather
+  bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+
+  # Security: List your Telegram user ID(s) to restrict access
+  # Get your ID by messaging @userinfobot on Telegram
+  # Leave empty [] to allow anyone (NOT RECOMMENDED)
+  allowed_users: []
+
+obsidian:
+  # Path where the bot stores data (can be any directory)
+  vault_path: "/path/to/your/data/directory"
+
+ai:
+  # Required: Your Anthropic API key from console.anthropic.com
+  anthropic_api_key: "YOUR_ANTHROPIC_API_KEY"
+
+  # Claude model to use for summaries
+  model: "claude-sonnet-4-20250514"
+
+whisper:
+  # Transcription mode: "local" (faster-whisper) or "cloud" (API-based)
+  # - local: Free, runs on your machine, requires good CPU/GPU
+  # - cloud: Fast, works anywhere; uses Groq (recommended) or OpenAI
+  mode: "cloud"
+
+  # Option 1: Groq (Recommended - free tier, very fast)
+  # Sign up at https://console.groq.com and create an API key
+  groq_api_key: ""
+
+  # Option 2: OpenAI Whisper API (paid, ~$0.006/min)
+  # Get from https://platform.openai.com/api-keys
+  openai_api_key: ""
+
+  # Local mode settings (only used if mode: "local")
+  # Model size options: tiny (fastest), base, small, medium, large-v3 (most accurate)
+  model_size: "base"
+  # Device options: auto, cpu, cuda (for NVIDIA GPUs)
+  device: "auto"
+
+digest:
+  # Daily digest time (24-hour format)
+  time: "20:00"
+  timezone: "America/Los_Angeles"
+
+# Optional: Spotify credentials (for private playlists only)
+spotify:
+  client_id: ""
+  client_secret: ""
+
+# Optional: Email settings for sending summaries
+# Two options: "resend" (recommended, easier) or "smtp" (Gmail, etc.)
+email:
+  enabled: false
+  provider: "resend"  # "resend" or "smtp"
+
+  # Option 1: Resend (Recommended - just need API key)
+  # Sign up free at https://resend.com, get API key, done!
+  resend_api_key: ""
+  from_email: "Podcast Bot <onboarding@resend.dev>"  # Works with free tier
+
+  # Option 2: SMTP (Gmail, etc.) - more complex setup
+  smtp_server: "smtp.gmail.com"
+  smtp_port: 587
+  sender_email: ""
+  sender_password: ""  # For Gmail, use an App Password
