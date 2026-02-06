@@ -804,9 +804,114 @@ class PodcastProcessor:
 
         # Check if we should use cloud transcription
         if self.config.whisper.mode == "cloud":
-            return await self._transcribe_cloud(audio_path, status_callback=status_callback)
+            return await self._transcribe_cloud_chunked(audio_path, status_callback=status_callback)
         else:
             return await self._transcribe_local(audio_path)
+
+    async def _get_audio_duration(self, audio_path: Path) -> float:
+        """Get audio duration in seconds using ffprobe."""
+        import subprocess
+        cmd = [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)
+        ]
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(cmd, capture_output=True, text=True)
+        )
+        try:
+            return float(result.stdout.strip())
+        except (ValueError, AttributeError):
+            return 0
+
+    async def _split_audio(self, audio_path: Path, chunk_duration: int = 1200) -> list[Path]:
+        """Split audio into chunks of specified duration (default 20 minutes)."""
+        import subprocess
+
+        duration = await self._get_audio_duration(audio_path)
+        if duration <= chunk_duration:
+            return [audio_path]
+
+        chunks = []
+        chunk_dir = audio_path.parent
+        base_name = audio_path.stem
+
+        num_chunks = int(duration // chunk_duration) + (1 if duration % chunk_duration else 0)
+        logger.info(f"Splitting {duration/60:.1f} min audio into {num_chunks} chunks")
+
+        loop = asyncio.get_event_loop()
+
+        for i in range(num_chunks):
+            start_time = i * chunk_duration
+            chunk_path = chunk_dir / f"{base_name}_chunk{i:03d}.mp3"
+
+            cmd = [
+                "ffmpeg", "-y", "-i", str(audio_path),
+                "-ss", str(start_time), "-t", str(chunk_duration),
+                "-ac", "1", "-ar", "16000", "-b:a", "24k",
+                str(chunk_path)
+            ]
+
+            await loop.run_in_executor(
+                None,
+                lambda cmd=cmd: subprocess.run(cmd, capture_output=True, check=True)
+            )
+
+            if chunk_path.exists():
+                chunks.append(chunk_path)
+                logger.info(f"Created chunk {i+1}/{num_chunks}: {chunk_path.stat().st_size / (1024*1024):.1f}MB")
+
+        return chunks
+
+    async def _transcribe_cloud_chunked(self, audio_path: Path, status_callback=None) -> list[TranscriptSegment]:
+        """Transcribe audio in chunks for long podcasts."""
+        # Get duration to decide if chunking is needed
+        duration = await self._get_audio_duration(audio_path)
+
+        # For podcasts under 45 minutes, use standard approach
+        if duration < 2700:  # 45 minutes
+            audio_path = await self._compress_audio_for_cloud(audio_path)
+            return await self._transcribe_cloud(audio_path, status_callback=status_callback)
+
+        # For longer podcasts, split into 20-minute chunks
+        logger.info(f"Long podcast detected ({duration/60:.1f} min), using chunked transcription")
+        if status_callback:
+            await status_callback(f"📦 Long podcast ({duration/60:.0f} min) - splitting into chunks for reliable processing...")
+
+        chunks = await self._split_audio(audio_path, chunk_duration=1200)  # 20 min chunks
+
+        all_segments = []
+        time_offset = 0
+
+        for i, chunk_path in enumerate(chunks):
+            if status_callback:
+                await status_callback(f"🎙️ Transcribing chunk {i+1}/{len(chunks)}...")
+
+            try:
+                chunk_segments = await self._transcribe_cloud(chunk_path, status_callback=None)
+
+                # Adjust timestamps with offset
+                for seg in chunk_segments:
+                    seg.start += time_offset
+                    seg.end += time_offset
+                    all_segments.append(seg)
+
+                # Get chunk duration for next offset
+                chunk_duration = await self._get_audio_duration(chunk_path)
+                time_offset += chunk_duration
+
+            finally:
+                # Clean up chunk file
+                if chunk_path.exists() and chunk_path != audio_path:
+                    chunk_path.unlink()
+
+        # Clean up original if we created chunks
+        if len(chunks) > 1 and audio_path.exists():
+            audio_path.unlink()
+
+        logger.info(f"Chunked transcription complete: {len(all_segments)} segments")
+        return all_segments
 
     async def _compress_audio_for_cloud(self, audio_path: Path) -> Path:
         """Compress audio to under 25MB for OpenAI API limit."""
@@ -957,10 +1062,14 @@ class PodcastProcessor:
     ) -> list[TranscriptSegment]:
         """Call a Whisper-compatible API and return transcript segments."""
         import openai
+        import httpx
 
         logger.info(f"Using {provider} Whisper API for transcription")
 
-        client_kwargs = {"api_key": api_key}
+        # Long timeout for large podcasts (30 min should handle 3+ hour podcasts)
+        timeout = httpx.Timeout(30.0, read=1800.0, write=60.0, connect=30.0)
+
+        client_kwargs = {"api_key": api_key, "timeout": timeout}
         if base_url:
             client_kwargs["base_url"] = base_url
         client = openai.OpenAI(**client_kwargs)
