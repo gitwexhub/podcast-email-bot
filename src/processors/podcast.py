@@ -1,5 +1,7 @@
 """Podcast processing: download, transcribe, summarize."""
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import logging
@@ -146,8 +148,13 @@ class PodcastProcessor:
 
             # Step 2: Transcribe
             queue_item.status = "transcribing"
-            segments = await self._transcribe(audio_path)
-            full_transcript = self._segments_to_text(segments)
+            if audio_path.suffix == ".txt":
+                # Pre-transcribed (e.g. YouTube captions) — skip Whisper
+                full_transcript = audio_path.read_text()
+                segments = []
+            else:
+                segments = await self._transcribe(audio_path)
+                full_transcript = self._segments_to_text(segments)
 
             # Step 3: Generate summary, key points, and soundbites
             queue_item.status = "summarizing"
@@ -265,19 +272,26 @@ class PodcastProcessor:
             duration = metadata.duration or 0
             duration_str = self._format_duration(duration)
 
-            # Step 2: Transcribe
+            # Step 2: Transcribe (or use pre-fetched captions for YouTube)
             queue_item.status = "transcribing"
             queue_item.duration_seconds = duration
             queue_item.started_at = datetime.now().timestamp()
-            await report_status(
-                f"🎙️ **Step 2/3:** Transcribing audio...\n"
-                f"Duration: {duration_str}\n"
-                f"_This may take a few minutes._"
-            )
-            segments = await self._transcribe(audio_path, status_callback=report_status)
-            full_transcript = self._segments_to_text(segments)
 
-            # Clean up audio file
+            if audio_path.suffix == ".txt":
+                # Pre-transcribed (e.g. YouTube captions) — no Whisper needed
+                await report_status("📄 **Step 2/3:** Using YouTube captions...")
+                full_transcript = audio_path.read_text()
+                segments = []
+            else:
+                await report_status(
+                    f"🎙️ **Step 2/3:** Transcribing audio...\n"
+                    f"Duration: {duration_str}\n"
+                    f"_This may take a few minutes._"
+                )
+                segments = await self._transcribe(audio_path, status_callback=report_status)
+                full_transcript = self._segments_to_text(segments)
+
+            # Clean up temp file
             if audio_path.exists():
                 audio_path.unlink()
 
@@ -321,6 +335,10 @@ class PodcastProcessor:
         # Check if it's Apple Podcasts
         if "podcasts.apple.com" in parsed.netloc:
             return await self._download_from_apple(url)
+
+        # Check if it's YouTube
+        if "youtube.com" in parsed.netloc or "youtu.be" in parsed.netloc:
+            return await self._download_from_youtube(url)
 
         # Try yt-dlp as fallback (works with many podcast hosts)
         return await self._download_with_ytdlp(url)
@@ -717,6 +735,74 @@ class PodcastProcessor:
         # yt-dlp supports Apple Podcasts
         return await self._download_with_ytdlp(url)
 
+    async def _download_from_youtube(self, url: str) -> tuple[Path, PodcastMetadata]:
+        """Download YouTube video using captions first (avoids bot detection), fallback to yt-dlp."""
+        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled, CouldNotRetrieveTranscript
+        import re
+
+        logger.info(f"Processing YouTube URL: {url}")
+
+        # Extract video ID
+        video_id_match = re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})", url)
+        if not video_id_match:
+            logger.warning("Could not extract YouTube video ID, falling back to yt-dlp")
+            return await self._download_with_ytdlp(url)
+
+        video_id = video_id_match.group(1)
+
+        # Try captions first
+        try:
+            loop = asyncio.get_event_loop()
+
+            def fetch_transcript():
+                api = YouTubeTranscriptApi()
+                return api.fetch(video_id, languages=["en", "en-US", "en-GB"])
+
+            transcript_data = await loop.run_in_executor(None, fetch_transcript)
+
+            # Fetch video metadata via yt-dlp in info-only mode (no download)
+            import yt_dlp
+            def fetch_info():
+                ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True,
+                            "extractor_args": {"youtube": {"player_client": ["android"]}}}
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    return ydl.extract_info(url, download=False)
+
+            try:
+                info = await loop.run_in_executor(None, fetch_info)
+                title = info.get("title", "Unknown")
+                uploader = info.get("uploader", "YouTube")
+                duration = info.get("duration", 0)
+            except Exception:
+                title = video_id
+                uploader = "YouTube"
+                duration = 0
+
+            # Build transcript text from caption segments
+            full_text = " ".join(seg.text.strip() for seg in transcript_data)
+
+            # Write transcript to a temp file so the rest of the pipeline can use it
+            temp_dir = Path(tempfile.mkdtemp())
+            transcript_path = temp_dir / "transcript.txt"
+            transcript_path.write_text(full_text)
+
+            metadata = PodcastMetadata(
+                title=title,
+                show_name=uploader,
+                duration=duration,
+            )
+
+            logger.info(f"Successfully fetched YouTube captions for: {title}")
+            # Return transcript_path with a marker so the caller knows it's pre-transcribed
+            return transcript_path, metadata
+
+        except (NoTranscriptFound, TranscriptsDisabled, CouldNotRetrieveTranscript) as e:
+            logger.info(f"No captions available ({e}), falling back to yt-dlp audio download")
+            return await self._download_with_ytdlp(url)
+        except Exception as e:
+            logger.warning(f"Caption fetch failed ({e}), falling back to yt-dlp")
+            return await self._download_with_ytdlp(url)
+
     async def _download_with_ytdlp(self, url: str) -> tuple[Path, PodcastMetadata]:
         """Download using yt-dlp (supports many sources including video podcasts)."""
         import yt_dlp
@@ -744,6 +830,8 @@ class PodcastProcessor:
             "noplaylist": True,
             # Better error messages
             "ignoreerrors": False,
+            # Bypass YouTube bot detection on cloud IPs
+            "extractor_args": {"youtube": {"player_client": ["android"]}},
         }
 
         loop = asyncio.get_event_loop()
