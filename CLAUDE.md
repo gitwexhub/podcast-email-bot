@@ -1,8 +1,25 @@
-# Podcast Knowledge Bot - Developer Documentation
+# CLAUDE.md
 
-## Product Overview
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-A Telegram bot that transforms podcast episodes into structured, email-ready summaries using Whisper transcription and Claude AI. Supports natural language refinement and learns from user feedback.
+## Commands
+
+```bash
+# Run the bot
+source .venv/bin/activate
+python -m src.bot
+
+# Run tests (use venv python directly — system pytest won't have dependencies)
+venv/bin/python -m pytest tests/ -v
+
+# Lint / format
+ruff check src/
+ruff format src/
+```
+
+Tests use `asyncio_mode="auto"` (configured in `pyproject.toml`) — all test functions can be `async`.
+
+---
 
 ## Architecture
 
@@ -43,183 +60,109 @@ A Telegram bot that transforms podcast episodes into structured, email-ready sum
 
 ---
 
-## Key Files
+## Configuration
 
-| File | Purpose |
-|------|---------|
-| `src/bot.py` | Main Telegram bot - handlers, conversation flows, email sending |
-| `src/config.py` | Pydantic configuration models, env var loading, Groq key detection |
-| `src/ai/summarizer.py` | Claude API integration for generating/refining summaries |
-| `src/ai/learning.py` | Feedback tracking and preference learning system |
-| `src/processors/podcast.py` | Audio extraction (yt-dlp), compression (ffmpeg), Whisper transcription |
-| `src/storage/summaries.py` | JSON-based summary persistence |
-| `src/storage/categories.py` | Hierarchical folder/category storage with tree operations |
-| `Dockerfile` | Cloud build - python:3.11-slim + ffmpeg, uses requirements-cloud.txt |
-| `railway.toml` | Railway deploy config (dockerfile builder, restart on failure) |
-| `requirements.txt` | Full local deps (includes faster-whisper, sentence-transformers) |
-| `requirements-cloud.txt` | Cloud deps (no PyTorch/faster-whisper for smaller image) |
-| `.env.example` | Env var template for local dev or Railway |
-| `config.yaml` | User configuration (gitignored - contains secrets) |
-| `config.yaml.example` | YAML config template |
+Config loads from `config.yaml` if present, otherwise from env vars. Env vars always override file values. All values are `.strip()`'d to handle copy-paste whitespace.
 
----
+### Required Variables
 
-## Railway Deployment
+| Variable | Description |
+|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather |
+| `TELEGRAM_ALLOWED_USERS` | Comma-separated Telegram user IDs |
+| `ANTHROPIC_API_KEY` | Claude API key |
+| `GROQ_API_KEY` | Groq Whisper key (or `OPENAI_API_KEY` with `gsk_` prefix) |
 
-### Environment Variables
+### Optional Variables
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather |
-| `TELEGRAM_ALLOWED_USERS` | Yes | Comma-separated Telegram user IDs |
-| `ANTHROPIC_API_KEY` | Yes | Claude API key |
-| `GROQ_API_KEY` | Yes | Groq API key (or use `OPENAI_API_KEY` with gsk_ prefix) |
-| `OPENAI_WHISPER_KEY` | No | Real OpenAI key for automatic fallback on Groq 429/413 |
-| `WHISPER_MODE` | No | `cloud` (default) or `local` |
-| `VAULT_PATH` | No | Data storage path (default: `/data/vault`) |
-| `AI_MODEL` | No | Claude model (default: `claude-sonnet-4-20250514`) |
-| `RESEND_API_KEY` | No | For email features |
-| `EMAIL_ENABLED` | No | `true`/`false` |
-| `DIGEST_TIME` | No | Daily digest time (default: `20:00`) |
-| `DIGEST_TIMEZONE` | No | Timezone (default: `America/Los_Angeles`) |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENAI_WHISPER_KEY` | — | Real OpenAI key for auto-fallback on Groq 429/413 |
+| `WHISPER_MODE` | `cloud` | `cloud` or `local` |
+| `VAULT_PATH` | `./data` | Data storage path (Docker: `/data/vault`) |
+| `AI_MODEL` | `claude-sonnet-4-20250514` | Claude model |
+| `RESEND_API_KEY` | — | Email service |
+| `EMAIL_ENABLED` | `false` | Enable email features |
+| `DIGEST_TIME` | `20:00` | Daily digest time |
+| `DIGEST_TIMEZONE` | `America/Los_Angeles` | Digest timezone |
 
-### Groq Key Detection Logic (`src/config.py`)
-The `_get_groq_key()` function checks:
-1. `GROQ_API_KEY` env var (primary, documented)
+### Groq Key Detection (`src/config.py`)
+`_get_groq_key()` checks:
+1. `GROQ_API_KEY` env var
 2. `OPENAI_API_KEY` starting with `gsk_` (backward compat for Railway)
-
-This means on Railway you can set either `GROQ_API_KEY=gsk_...` or `OPENAI_API_KEY=gsk_...` and Groq will be detected.
 
 ---
 
 ## Bot Modes
 
 ### AI-Only Mode
-1. User sends `/podcast <url>`
-2. Bot transcribes and generates summary automatically
-3. User reviews and can approve or provide feedback
-4. Summary saved to storage
+User sends `/podcast <url>` → bot transcribes and generates summary automatically → user reviews and approves/refines → saved to storage.
 
 ### Interactive "Highlighting" Mode
-1. User sends `/podcast <url>` and selects interactive mode
-2. While listening, user adds highlights:
-   - `/detail <text>` - Key facts, stats, points
-   - `/insight <text>` - Personal takeaways, connections
-3. User sends `/end` when done
-4. AI generates summary incorporating user's highlights
-5. Review, refine, save
+User selects interactive mode → adds highlights while listening (`/detail <text>`, `/insight <text>`) → sends `/end` → AI generates summary incorporating highlights → review/refine/save.
 
 ---
 
 ## Smart Folder System
 
-AI-managed hierarchical folder organization for podcast summaries. Podcasts are automatically categorized on save, and the folder structure evolves over time.
-
-### How It Works
-
-1. **Auto-categorization**: When a podcast is saved, Claude analyzes the title, show name, and summary content against the current folder tree, then files it into the best-matching folder (or creates a new one).
-2. **Dynamic reorganization**: Every 5th save, Claude reviews the full folder tree and can merge near-duplicates, split overgrown folders (>10 items), or rename unclear folders.
-3. **User-editable**: Users can create, rename, move, and delete folders via inline buttons in `/lookup`.
-4. **Smart search**: `/lookup` supports natural language queries — first tries substring match on titles/shows, then falls back to Claude semantic search with relevance scoring.
+Podcasts are auto-categorized on save. Every 5th save triggers an AI reorganization pass (merge near-duplicates, split folders >10 items).
 
 ### Data Model
-
 - **`Category`** dataclass: `id`, `name`, `emoji`, `description`, `parent_id`, `summary_ids`, timestamps
 - **Hierarchy**: Max 2 levels deep (parent → child). Enforced in `create_category()` and `move_category()`.
-- **Storage**: `{vault_path}/.categories.json` — includes a `save_count` field for triggering reorganization.
-- **Summary link**: Each `PodcastSummary` has a `categories: list[str]` field storing category IDs.
+- **Storage**: `{vault_path}/.categories.json` with a `save_count` field for reorg triggering.
 
-### Key Methods
-
-**`src/storage/categories.py` — CategoryStorage:**
-- `create_category()`, `rename_category()`, `move_category()`, `delete_category()` — CRUD
-- `add_summary()`, `remove_summary()`, `move_summary()` — filing
-- `list_tree()` — nested dict structure for display/AI context
-- `find_by_name()` — fuzzy match for user input
-- `format_tree_display()` — formatted string for Telegram
+### Key Methods in `src/storage/categories.py`
+- `list_tree()` — nested dict for display/AI context
 - `apply_reorganization()` — batch operations from AI (merge/create/move/rename)
 - `increment_save_count()` — tracks saves for reorg trigger
 
-**`src/ai/summarizer.py` — AI methods:**
-- `categorize_summary(title, show_name, summary_text, folder_tree)` → returns folder path + create flag
-- `reorganize_folders(folder_tree, summary_titles)` → returns list of operations
-- `search_summaries(query, summary_list)` → returns ranked matches with relevance scores (1-5)
-
-### Folder UI Flow (in `/lookup`)
-
-```
-/lookup → Library view (folder tree + recent 5)
-  ├── Type number → View summary detail
-  ├── Type folder name → Browse folder contents (paginated)
-  │     ├── Sub-folders listed first
-  │     ├── Summaries with pagination (10/page)
-  │     └── Buttons: New Sub-folder, Rename, Move, Delete, Back
-  └── Type text → Search (substring → semantic)
-        └── Results with relevance stars
-```
-
-### Summary Actions (in detail view)
-- Edit, Send as Email, **Move to Folder**, Delete, Back to Library
-
-### `/organize` Command
-- If no folders exist: batch-categorizes all existing podcasts
-- If folders exist: triggers AI reorganization pass
+### Key Methods in `src/ai/summarizer.py`
+- `categorize_summary(title, show_name, summary_text, folder_tree)` → folder path + create flag
+- `reorganize_folders(folder_tree, summary_titles)` → list of operations
+- `search_summaries(query, summary_list)` → ranked matches with relevance scores (1–5)
 
 ### Design Decisions
-- **~20 folder cap**: AI prompt instructs Claude to reuse existing folders and keep total manageable
+- **~20 folder cap**: AI prompt instructs Claude to reuse existing folders
 - **Non-blocking categorization**: If categorization API call fails, the save still succeeds (logged as warning)
-- **Backward compatible**: Existing summaries without `categories` field load with `categories: []`. Use `/organize` to retroactively file them.
-- **Telegram message limits**: Folder tree display uses counts-only for sub-folders; pagination prevents exceeding 4096 char limit.
+- **Backward compatible**: Existing summaries without `categories` field load with `categories: []`; use `/organize` to retroactively file them
 
 ---
 
 ## Common Bugs / Known Issues
 
 ### ConversationHandler Stuck State
-**Problem**: When callbacks are triggered from background tasks (`asyncio.create_task`), the ConversationHandler may not catch them, leaving the user stuck.
-**Solution**: A standalone `CallbackQueryHandler` is registered outside the ConversationHandler (line ~1816 in bot.py). The ConversationHandler also has a `conversation_timeout=600` (10 minutes) to auto-recover.
+Callbacks from background `asyncio.create_task` aren't caught by ConversationHandler. A standalone `CallbackQueryHandler` is registered outside the ConversationHandler (~line 1816 in `bot.py`). `conversation_timeout=600` provides auto-recovery.
 
 ### Groq 25MB File Limit
-**Problem**: Groq's Whisper API rejects files over 25MB.
-**Solution**: The podcast processor auto-compresses audio with ffmpeg before sending. Very long podcasts (3+ hours) may still exceed the limit after compression.
-
-### Trailing Whitespace in API Keys
-**Problem**: Copy-pasting API keys from web UIs sometimes includes trailing newlines or spaces, causing auth failures.
-**Solution**: All env var reads in `config.py` call `.strip()` on the value.
+Auto-compressed with ffmpeg before sending. Very long podcasts (3+ hours) may still exceed the limit after compression.
 
 ### 429 Rate Limit on Groq Free Tier
-**Problem**: Groq's free tier has per-hour audio limits (~2 hours/hour). Back-to-back podcast processing can hit this.
-**Solution**: If `OPENAI_WHISPER_KEY` is set, the bot automatically falls back to OpenAI and notifies the user. Without it, the error surfaces and user must wait ~20 min.
+If `OPENAI_WHISPER_KEY` is set, the bot automatically falls back to OpenAI. Without it, user must wait ~20 min.
 
-### Telegram Markdown Parse Errors
-**Problem**: Special characters in error messages or summaries can cause `telegram.error.BadRequest` when using MarkdownV2 parse mode.
-**Solution**: The bot sanitizes output, but edge cases with nested formatting can slip through. Error messages are sent as plain text.
+### Tiny Last Chunk (400 "could not process file")
+When a podcast is slightly over a 20-min boundary (e.g. 80min 30sec → 5 chunks where chunk 5 is 30sec), Groq/OpenAI reject the tiny final file. Fixed in `_split_audio`: any chunk under 30 seconds is skipped. Don't lower this threshold — even 20-second chunks can fail depending on audio encoding.
 
-### Spotify Episode Matching (Wrong Episode)
-**Problem**: When given a Spotify show link (not episode), yt-dlp may match the wrong episode.
-**Solution**: Users should provide specific episode links. The bot extracts episode metadata from Spotify's page when possible.
+### Retry Logic Only Covers Transient Errors
+The per-chunk retry (30s wait, 1 retry) only fires on `RateLimitError`, `APITimeoutError`, `APIConnectionError`, `InternalServerError`. It deliberately does NOT retry `BadRequestError` (400) — those are malformed files that will always fail and retrying just wastes 30 seconds before the same error.
+
+### Spotify Episode Matching
+The Spotify show ID extraction uses a `/show/([a-zA-Z0-9]{22})` regex on the episode page HTML. **Do not complicate this with multiple fallback methods** — that approach was tried and broke all podcast resolution.
 
 ### iTunes Returns Wrong Podcast for Generic Names
-**Problem**: Podcasts with generic names like "Empire" can match the wrong podcast in iTunes search. For example, searching "Empire" returns "Empire: World History" before "Empire" (Blockworks), and substring matching (`"empire" in "empire: world history"`) matches the wrong one.
-**Solution**: iTunes matching now uses priority-based matching:
-1. **Exact match first**: `name == podcast_name` (case-insensitive)
-2. **Substring match**: `podcast_name in name`
-3. **Best guess**: First result with a feed URL
+iTunes matching uses priority-based matching:
+1. Exact match: `name == podcast_name` (case-insensitive)
+2. Substring match: `podcast_name in name`
+3. Best guess: first result with a feed URL
 
-**Important**: The Spotify show ID extraction uses a simple `/show/([a-zA-Z0-9]{22})` regex on the episode page HTML. This pattern is reliable and should NOT be over-complicated with multiple fallback methods - that approach was tried and broke all podcast resolution.
+### Telegram Markdown Parse Errors
+Special characters in summaries can cause `telegram.error.BadRequest` with MarkdownV2. Error messages are sent as plain text to avoid this.
 
 ---
 
 ## Learning System
 
-Tracks user preferences to improve summaries over time:
-- **Length**: brief / medium / detailed
-- **Detail level**: high-level / balanced / granular
-- **Tone**: casual / professional / academic
-- **Features**: timestamps, soundbites, takeaways
-- **Feedback patterns**: Common phrases the user uses
-
-Preferences stored in `data/learning.json`, injected into summarizer prompts.
+Tracks user preferences to improve summaries over time: length, detail level, tone, features, and feedback patterns. Stored in `data/.learning.json`, injected into summarizer prompts.
 
 ---
 
@@ -227,8 +170,6 @@ Preferences stored in `data/learning.json`, injected into summarizer prompts.
 
 | Command | Description |
 |---------|-------------|
-| `/start` | Welcome message |
-| `/help` | Show available commands |
 | `/podcast <url>` | Process a podcast |
 | `/lookup` | Browse folders, search, and manage saved summaries |
 | `/organize` | AI-powered folder reorganization or batch categorization |
@@ -238,44 +179,16 @@ Preferences stored in `data/learning.json`, injected into summarizer prompts.
 | `/poweron` / `/poweroff` | Start/stop bot (supervisor mode) |
 | `/cancel` | Cancel current operation |
 
-### Interactive Mode Commands
-| Command | Description |
-|---------|-------------|
-| `/detail <text>` | Add a key fact or point |
-| `/insight <text>` | Add a personal takeaway |
-| `/end` | Generate summary with highlights |
+**Interactive Mode:** `/detail <text>` (key fact), `/insight <text>` (takeaway), `/end` (generate summary)
 
 ---
 
-## Security
+## Adding New Content Types
 
-- **Access control**: `allowed_users` whitelist in config
-- **SSRF protection**: URL validation before fetching
-- **Error sanitization**: No internal paths/details in user-facing errors
-- **Secrets management**: All keys in gitignored config.yaml or env vars
-- **No secrets in source**: `_get_groq_key()` reads from env only
-
----
-
-## Development
-
-### Running Locally
-```bash
-source .venv/bin/activate
-python -m src.bot
-```
-
-### Adding New Content Types
 1. Create processor in `src/processors/`
 2. Add handler in `src/bot.py`
-3. Update summarizer prompt if needed
+3. Update summarizer prompt in `src/ai/summarizer.py` if needed
 
-### Modifying Summary Format
-Edit the prompt in `src/ai/summarizer.py`. The learning system injects user preferences automatically.
+## Deployment (Railway)
 
-### Testing Transcription
-```python
-from src.processors.podcast import PodcastProcessor
-processor = PodcastProcessor(config)
-transcript = await processor.transcribe("path/to/audio.mp3")
-```
+Dockerfile uses `python:3.11-slim` + ffmpeg with `requirements-cloud.txt` (no PyTorch/faster-whisper). Persistent data requires a Railway volume mount at `/data/vault`. `railway.toml` sets restart policy to ON_FAILURE (max 5 retries).
