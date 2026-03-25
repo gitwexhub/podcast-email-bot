@@ -95,6 +95,10 @@ Send a podcast link, get back a structured summary with key points, notable quot
 
 ## Transcription Options
 
+### Long Podcasts (45+ minutes)
+
+Podcasts over 45 minutes are automatically split into 20-minute chunks and transcribed sequentially. Progress is shown in Telegram (`Transcribing chunk 2/4...`). If a chunk hits a transient error (rate limit, timeout), the bot retries once after 30 seconds before failing.
+
 ### Groq (Recommended)
 Free tier, very fast. The bot auto-compresses audio to fit Groq's 25MB limit.
 
@@ -217,6 +221,7 @@ On individual summaries:
 
 ### "Groq transcription failed"
 - **File too large / Rate limited**: If you set `OPENAI_WHISPER_KEY`, the bot automatically falls back to OpenAI. Otherwise, wait for the rate limit to reset (~20 min) or try a shorter podcast.
+- **Long podcast stuck on a chunk**: The bot retries once after 30s on transient errors. If it still fails, the error message will say which chunk failed — try again or set `OPENAI_WHISPER_KEY` for a more reliable fallback.
 - **Trailing whitespace in key**: The bot auto-strips whitespace, but double-check your env var has no extra characters.
 
 ### "Can't find audio for Spotify podcast"
