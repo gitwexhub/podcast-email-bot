@@ -946,14 +946,23 @@ class PodcastProcessor:
                 lambda cmd=cmd: subprocess.run(cmd, capture_output=True, check=True)
             )
 
-            if chunk_path.exists():
+            if chunk_path.exists() and chunk_path.stat().st_size > 0:
                 chunks.append(chunk_path)
                 logger.info(f"Created chunk {i+1}/{num_chunks}: {chunk_path.stat().st_size / (1024*1024):.1f}MB")
+            elif chunk_path.exists():
+                chunk_path.unlink()
+                logger.debug(f"Skipped empty chunk {i+1}/{num_chunks}")
 
         return chunks
 
     async def _transcribe_cloud_chunked(self, audio_path: Path, status_callback=None) -> list[TranscriptSegment]:
         """Transcribe audio in chunks for long podcasts."""
+        file_size = audio_path.stat().st_size
+        if file_size == 0:
+            raise ValueError(
+                "Audio file is empty (0 bytes) — the download may have failed or the URL is invalid."
+            )
+
         # Get duration to decide if chunking is needed
         duration = await self._get_audio_duration(audio_path)
 
