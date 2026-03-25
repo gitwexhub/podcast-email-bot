@@ -947,8 +947,13 @@ class PodcastProcessor:
             )
 
             if chunk_path.exists() and chunk_path.stat().st_size > 0:
-                chunks.append(chunk_path)
-                logger.info(f"Created chunk {i+1}/{num_chunks}: {chunk_path.stat().st_size / (1024*1024):.1f}MB")
+                chunk_actual_duration = await self._get_audio_duration(chunk_path)
+                if chunk_actual_duration < 30:
+                    chunk_path.unlink()
+                    logger.info(f"Skipped chunk {i+1}/{num_chunks}: too short ({chunk_actual_duration:.1f}s)")
+                else:
+                    chunks.append(chunk_path)
+                    logger.info(f"Created chunk {i+1}/{num_chunks}: {chunk_path.stat().st_size / (1024*1024):.1f}MB ({chunk_actual_duration:.0f}s)")
             elif chunk_path.exists():
                 chunk_path.unlink()
                 logger.debug(f"Skipped empty chunk {i+1}/{num_chunks}")
@@ -986,7 +991,26 @@ class PodcastProcessor:
                 await status_callback(f"🎙️ Transcribing chunk {i+1}/{len(chunks)}...")
 
             try:
-                chunk_segments = await self._transcribe_cloud(chunk_path, status_callback=None)
+                import openai as _openai
+                last_exc = None
+                for attempt in range(2):
+                    try:
+                        chunk_segments = await self._transcribe_cloud(chunk_path, status_callback=None)
+                        break
+                    except (_openai.RateLimitError, _openai.APITimeoutError, _openai.APIConnectionError, _openai.InternalServerError) as e:
+                        last_exc = e
+                        if attempt == 0:
+                            wait = 30
+                            logger.warning(f"Chunk {i+1} failed (attempt 1): {e} — retrying in {wait}s")
+                            if status_callback:
+                                await status_callback(f"⚠️ Chunk {i+1}/{len(chunks)} failed, retrying in {wait}s...")
+                            await asyncio.sleep(wait)
+                        else:
+                            raise
+                    except Exception:
+                        raise  # non-retryable (e.g. 400 BadRequestError)
+                else:
+                    raise last_exc
 
                 # Adjust timestamps with offset
                 for seg in chunk_segments:
